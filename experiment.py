@@ -1,9 +1,11 @@
-from transformers import AutoTokenizer, BertForSequenceClassification
-from transformers import TrainingArguments, Trainer, TrainerCallback
-from datasets import load_dataset
-import numpy as np
 import evaluate
+import numpy as np
+from datasets import load_dataset
+from transformers import AutoTokenizer, BertForSequenceClassification
+from transformers import TrainingArguments, Trainer
+
 from resprop_linear import resprofify_bert
+from plot import plot_log_histories
 
 
 # Load Model
@@ -26,9 +28,8 @@ def tokenize_function(examples):
 dataset = load_dataset("fancyzhx/yelp_polarity")
 tokenized_datasets = dataset.map(tokenize_function, batched=True)
 
-train_dataset = tokenized_datasets["train"].shuffle(seed=42).select(range(512))
-eval_dataset = tokenized_datasets["test"].shuffle(seed=42).select(range(512))
-
+train_dataset = tokenized_datasets["train"].shuffle(seed=42).select(range(64000))
+eval_dataset = tokenized_datasets["test"].shuffle(seed=42).select(range(1000))
 
 # Accuracy
 metric = evaluate.load("accuracy")
@@ -39,25 +40,14 @@ def compute_metrics(eval_pred):
     return metric.compute(predictions=predictions, references=labels)
 
 
-class AccuracyLoggerCallback(TrainerCallback):
-    def __init__(self):
-        self.results = {}
-
-    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        if metrics is not None:
-            epoch = int(state.epoch)
-            self.results[epoch] = metrics.get("eval_accuracy")
-
-
-evaluation_results = {}
+log_histories = {}
 for reuse_percentage in [0.0, 0.5, 0.7, 0.9, 0.95, 0.99]:
     model = resprofify_bert(base_model, reuse_percentage=reuse_percentage)
-    accuracy_logger = AccuracyLoggerCallback()
-
     training_args = TrainingArguments(
-        output_dir="trainer_out",
-        eval_strategy="epoch",
-        num_train_epochs=32,
+        output_dir=f"trainer_out/{model_name.replace('/', '-')}/rp_{int(reuse_percentage * 100)}",
+        eval_strategy="steps",
+        num_train_epochs=4,
+        eval_steps=1/64
     )
 
     trainer = Trainer(
@@ -66,14 +56,12 @@ for reuse_percentage in [0.0, 0.5, 0.7, 0.9, 0.95, 0.99]:
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         compute_metrics=compute_metrics,
-        callbacks=[accuracy_logger],
     )
 
     trainer.train()
 
-    evaluation_results[reuse_percentage] = accuracy_logger.results
+    log_histories[reuse_percentage] = trainer.state.log_history
 
-print()
-print("----------------")
-print()
-print(evaluation_results)
+
+# Generate Plot
+plot_log_histories(log_histories, file_name="result.png")
